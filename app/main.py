@@ -549,7 +549,7 @@ async def update_bad_data(
 @get_data_router.get("/station/{station_id}")
 async def get_station_data(
     station_id: str,
-    limit: int = Query(100, ge=1, le=1000),  # default 100, min 1, max 1000
+    limit: int = Query(100, ge=1),  # default 100, min 1, max limit removed (was le=1000)
     start: str = Query(None, description="Start datetime in ISO format, e.g. 2025-08-01T00:00:00Z"),
     end: str = Query(None, description="End datetime in ISO format, e.g. 2025-08-21T23:59:59Z"),
     db: AsyncSession = Depends(get_db),
@@ -643,6 +643,7 @@ async def get_station_data(
             "bad_data": station.bad_data,
             "mean": station.mean,
             "chart_type": station.chart_type,
+            "data_limit": station.data_limit,
             "data": result_data
         }
     except Exception as e:
