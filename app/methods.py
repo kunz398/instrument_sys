@@ -816,6 +816,7 @@ async def actual_neon_method(station, token: str, session_id: str, limit=100, st
                 data = response.json()
                 
                 # Extract samples
+                #result_data = data.get("GetDataResult", {}) if isinstance(data, dict) else {}
                 result_data = data.get("GetDataResampledResult", {}) if isinstance(data, dict) else {}
                 samples = result_data.get("Samples", []) if isinstance(result_data, dict) else []
                 
