@@ -11,7 +11,7 @@ services:
       - ./app:/app/app
       - ./app/uploads:/app/uploads
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:Oceanportal2017*@db/library_db
+      - DATABASE_URL=postgresql+asyncpg://postgres:Oceanportal2017*@db/instrument_db
       - RELOAD=${RELOAD:-false}
       - WORKERS=${WORKERS:-1}
       - INIT_DB=${INIT_DB:-false}
