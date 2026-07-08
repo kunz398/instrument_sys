@@ -157,7 +157,7 @@ async def spot_method(station, limit=100, start: str = None, end: str = None) ->
                 token_obj = result.scalar_one_or_none()
                 if token_obj:
                     source_url = source_url.replace("REPALCE_TOKEN_STRING", token_obj.token)
-        
+        # print(f"\033[91msource_url: {source_url}\033[0m")
         id_columns = [col.strip() for col in variable_id.split(',') if col.strip()]
         label_columns = [col.strip() for col in variable_label.split(',') if col.strip()]
         if len(id_columns) != len(label_columns):
@@ -228,14 +228,15 @@ async def pacioos_method(station, limit=100, start: str = None, end: str = None)
         variable_id = station.variable_id or ''
         variable_label = station.variable_label or ''
         
-        # Use UTC to ensure we catch today's data (Jan 15)
+       
         now = datetime.now(timezone.utc)
         end_time = now.isoformat(timespec='seconds').replace("+00:00", "Z")
-        start_time = (now - timedelta(days=7)).isoformat(timespec='seconds').replace("+00:00", "Z")
-        
+        start_time = "1900-01-01T00:00:00Z"
+
         source_url = source_url.replace("START_TIME", start_time)
         source_url = source_url.replace("END_TIME", end_time)
         source_url = source_url.replace("STATION_ID", station.station_id)
+        # print(f"\033[91msource_url: {source_url}\033[0m")
 
         id_columns = [col.strip() for col in variable_id.split(',') if col.strip()]
         label_columns = [col.strip() for col in variable_label.split(',') if col.strip()]
@@ -316,6 +317,116 @@ async def pacioos_method(station, limit=100, start: str = None, end: str = None)
         print(f"Error in pacioos_method: {e}")
         return []
 
+
+async def pacioos_smart_method(station, limit=100, start: str = None, end: str = None) -> List[dict]:
+    """
+    Parse ERDDAP tabledap JSON ("table"/columnNames/rows) data from smart-buoy
+    """
+    try:
+        source_url = station.source_url
+        variable_id = station.variable_id or ''
+        variable_label = station.variable_label or ''
+
+       
+        now = datetime.now(timezone.utc)
+        earliest = datetime(1900, 1, 1, tzinfo=timezone.utc)
+        try:
+            end_dt = datetime.fromisoformat(end.replace('Z', '+00:00')) if end else now
+        except Exception:
+            end_dt = now
+        try:
+            start_dt = datetime.fromisoformat(start.replace('Z', '+00:00')) if start else earliest
+        except Exception:
+            start_dt = earliest
+
+        end_time = end_dt.astimezone(timezone.utc).isoformat(timespec='seconds').replace("+00:00", "Z")
+        start_time = start_dt.astimezone(timezone.utc).isoformat(timespec='seconds').replace("+00:00", "Z")
+
+        source_url = source_url.replace("START_TIME", start_time)
+        source_url = source_url.replace("END_TIME", end_time)
+        source_url = source_url.replace("STATION_ID", station.station_id)
+        # print(f"\033[91msource_url: {source_url}\033[0m")
+
+        id_columns = [col.strip() for col in variable_id.split(',') if col.strip()]
+        label_columns = [col.strip() for col in variable_label.split(',') if col.strip()]
+        if len(id_columns) != len(label_columns):
+            return []
+        column_mapping = dict(zip(id_columns, label_columns))
+
+        async with httpx.AsyncClient(verify=False) as client:
+            response = await client.get(source_url)
+            response.raise_for_status()
+            data = response.json()
+
+        table = data.get("table", {})
+        column_names = table.get("columnNames", [])
+        raw_rows = table.get("rows", [])
+        if not raw_rows:
+            return []
+
+        def get_dt(entry):
+            for val in entry.values():
+                try:
+                    iso = to_iso_z(val)
+                    if iso:
+                        return datetime.fromisoformat(iso.replace('Z', '+00:00'))
+                except: continue
+            return datetime.min
+
+        # 1. Extract all available data
+        all_data = []
+        for raw_row in raw_rows:
+            props = dict(zip(column_names, raw_row))
+
+            entry = {}
+            for old_key, new_key in column_mapping.items():
+                if old_key in props:
+                    entry[new_key] = props[old_key]
+
+            lon = props.get("longitude")
+            lat = props.get("latitude")
+            if lon is not None and lat is not None:
+                entry["lon_deg"], entry["lat_deg"] = lon, lat
+
+            if entry:
+                all_data.append(entry)
+
+        # 2. Sort newest first to accurately slice the MOST RECENT records
+        all_data.sort(key=get_dt, reverse=True)
+
+       
+        #    most recent 'limit' records.
+        if start or end:
+            def in_range(item):
+                dt = get_dt(item)
+                if dt == datetime.min: return False
+                if start:
+                    try:
+                        s_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                        if dt < s_dt: return False
+                    except: pass
+                if end:
+                    try:
+                        e_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+                        if dt > e_dt: return False
+                    except: pass
+                return True
+            all_data = [d for d in all_data if in_range(d)]
+
+        # 4. Apply limit to get the newest 'limit' items (within the requested range, if any)
+        recent_data = all_data[:limit]
+
+        # 5. Filter bad data
+        filtered_data = filter_bad_data(recent_data, getattr(station, 'bad_data', None))
+
+        # 6. Sort the final result to OLDEST FIRST, NEWEST LAST (ascending)
+        filtered_data.sort(key=get_dt)
+
+        interval = int(getattr(station, 'intervals', 0) or 0)
+        return apply_intervals(filtered_data, interval)
+    except Exception as e:
+        print(f"Error in pacioos_smart_method: {e}")
+        return []
 
 
 async def dart_method(station, limit=100, start: str = None, end: str = None) -> List[dict]:
@@ -1080,6 +1191,7 @@ async def neon_method(station, limit=100, start: str = None, end: str = None) ->
 METHOD_MAPPING = {
     "spot_method": spot_method,
     "pacioos_method": pacioos_method,
+    "pacioos_smart_method": pacioos_smart_method,
     "dart_method": dart_method,  # applied mean
     "ioc_method": ioc_method,    # applied mean
     "neon_method": neon_method,
